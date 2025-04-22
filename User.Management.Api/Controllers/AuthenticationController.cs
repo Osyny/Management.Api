@@ -64,8 +64,14 @@ namespace User.Management.Api.Controllers
                 // Add role to the user...
                 await _userManager.AddToRoleAsync(user, role);
 
+                // Add Token to Verify the email
+                var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+                var confirmationLink = Url.Action(nameof(ConfirmEmail), "Authentication", new { token, email = user.Email }, Request.Scheme);
+                var message = new Message(new string[] { user.Email! }, "Confirmation Email Link", confirmationLink!);
+                _emailService.SendEmail(message);
+
                 return StatusCode(StatusCodes.Status201Created,
-                 new Response { Status = "Success", Message = "User create Succcessfull!" });
+                 new Response { Status = "Success", Message = $"User create & Email send to {user.Email} Succcessfully!" });
             }
             else
             {
@@ -74,8 +80,25 @@ namespace User.Management.Api.Controllers
             }
         }
 
-        [HttpGet]
-        public IActionResult TestEmail()
+        [HttpGet("ConfirmEmail")]
+        public async Task<IActionResult> ConfirmEmail(string token, string email)
+        {
+            var userExist = await _userManager.FindByEmailAsync(email);
+            if (userExist != null)
+            {
+                var result = await _userManager.ConfirmEmailAsync(userExist, token);
+                if(result.Succeeded)
+                {
+                    return StatusCode(StatusCodes.Status200OK,
+                           new Response { Status = "Success", Message = "Email Verified Succcessfully!" });
+                }
+            }
+            return StatusCode(StatusCodes.Status500InternalServerError,
+            new Response { Status = "Error", Message = "This User Doesnot exist!" });
+        }
+
+       // [HttpGet]
+        private IActionResult TestEmail()
         {
 
             var message = new Message(new string[] { "oxana1404@gmail.com" }, "Test", "<h1>Subscribe to my chanal!!!</h1>");
