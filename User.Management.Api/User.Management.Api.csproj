@@ -30,8 +30,4 @@
     <ProjectReference Include="..\User.Management.Service\User.Management.Service.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <Folder Include="Models\Authentification\Login\" />
-  </ItemGroup>
-
 </Project>

@@ -1,8 +1,14 @@
 ﻿using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
-
+using Microsoft.IdentityModel.Tokens;
+using System;
+using System.Data;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using User.Management.Api.Models;
+using User.Management.Api.Models.Authentification.Login;
 using User.Management.Api.Models.Authentification.SignUp;
 using User.Management.Core.Entities;
 using User.Management.Service.Models;
@@ -97,7 +103,55 @@ namespace User.Management.Api.Controllers
             new Response { Status = "Error", Message = "This User Doesnot exist!" });
         }
 
-       // [HttpGet]
+        [HttpPost]
+        [Route("login")]
+        public async Task<IActionResult> Login([FromBody] LoginModel loginModel)
+        {
+            //checking the user...
+            var user = await _userManager.FindByNameAsync(loginModel.Username);
+            if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
+            {
+                var authClaims = new List<Claim>
+                {
+                    new Claim(ClaimTypes.Name, user.UserName),
+                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                };
+
+                // we add roles to the list
+                var userRoles = await _userManager.GetRolesAsync(user);
+                foreach (var role in userRoles)
+                {
+                    authClaims.Add(new Claim(ClaimTypes.Role, role));
+                }
+
+                // generate the token with the climes...
+                var jwtToken = GetToken(authClaims);
+                // returning the token...
+                return Ok(new
+                {
+                    token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+                    expiration = jwtToken.ValidTo,
+                });
+            }
+
+            return Unauthorized();  
+
+        }
+
+        private JwtSecurityToken GetToken(List<Claim> authClaims)
+        {
+            var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
+            var token = new JwtSecurityToken(
+                issuer: _configuration["JWT:ValidIssuer"],
+                audience: _configuration["JWT:ValidAudience"],
+                expires: DateTime.Now.AddHours(3),
+                claims: authClaims,
+                signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256));
+
+            return token;
+        }
+
+        // [HttpGet]
         private IActionResult TestEmail()
         {
 
