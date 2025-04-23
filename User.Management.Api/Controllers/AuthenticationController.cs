@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
@@ -16,12 +17,14 @@ using User.Management.Service.Services;
 
 namespace User.Management.Api.Controllers
 {
+    [Authorize]
     [Route("api/[controller]")]
     [ApiController]
     public class AuthenticationController : ControllerBase
     {
         private readonly IConfiguration _configuration;
         private readonly UserManager<ApplicationUser> _userManager;
+        private readonly SignInManager<ApplicationUser> _signInManager;
 
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IEmailService _emailService;
@@ -29,15 +32,18 @@ namespace User.Management.Api.Controllers
             UserManager<ApplicationUser> userManager,
             IConfiguration configuration,
             RoleManager<IdentityRole> roleManager,
-            IEmailService emailService
+            IEmailService emailService,
+            SignInManager<ApplicationUser> signInManager
             ) 
         {
             _userManager = userManager;
             _configuration = configuration;
             _roleManager = roleManager;
             _emailService = emailService;
+            _signInManager = signInManager;
         }
 
+        [AllowAnonymous]
         [HttpPost]
         public async Task<IActionResult> Register([FromBody]RegisterUser registerUser, string role)
         {
@@ -55,6 +61,7 @@ namespace User.Management.Api.Controllers
                 LastName = registerUser.LastName,
                 UserName = registerUser.UserName,
                 SecurityStamp = Guid.NewGuid().ToString(),
+              //  TwoFactorEnabled = true
             };
 
             if(await _roleManager.RoleExistsAsync(role))
@@ -86,6 +93,7 @@ namespace User.Management.Api.Controllers
             }
         }
 
+        [AllowAnonymous]
         [HttpGet("ConfirmEmail")]
         public async Task<IActionResult> ConfirmEmail(string token, string email)
         {
@@ -103,14 +111,19 @@ namespace User.Management.Api.Controllers
             new Response { Status = "Error", Message = "This User Doesnot exist!" });
         }
 
+        [AllowAnonymous]
         [HttpPost]
         [Route("login")]
         public async Task<IActionResult> Login([FromBody] LoginModel loginModel)
         {
+            // Clear the existing external cookie to ensure a clean login process
+            await _signInManager.SignOutAsync();
+
             //checking the user...
             var user = await _userManager.FindByNameAsync(loginModel.Username);
+
             if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
-            {
+            {             
                 var authClaims = new List<Claim>
                 {
                     new Claim(ClaimTypes.Name, user.UserName),
@@ -126,6 +139,9 @@ namespace User.Management.Api.Controllers
 
                 // generate the token with the climes...
                 var jwtToken = GetToken(authClaims);
+
+                await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
+
                 // returning the token...
                 return Ok(new
                 {
@@ -133,9 +149,52 @@ namespace User.Management.Api.Controllers
                     expiration = jwtToken.ValidTo,
                 });
             }
-
             return Unauthorized();  
+        }
 
+        [HttpPost("logout")]
+        public async Task<IActionResult> Logout()
+        {
+            await _signInManager.SignOutAsync();
+
+            return NoContent();
+        }
+
+        [AllowAnonymous]
+        [HttpPost]
+        [Route("login-2FA")]
+        public async Task<IActionResult> LoginWithOTP(string code, string username)
+        {
+            var user = await _userManager.FindByNameAsync(username);
+            var signIn = await _signInManager.TwoFactorSignInAsync("Email", code, false, false);
+            if (signIn.Succeeded)
+            {
+                if (user != null)
+                {
+                    var authClaims = new List<Claim>
+                    {
+                        new Claim(ClaimTypes.Name, user.UserName),
+                        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                    };
+                    var userRoles = await _userManager.GetRolesAsync(user);
+                    foreach (var role in userRoles)
+                    {
+                        authClaims.Add(new Claim(ClaimTypes.Role, role));
+                    }
+
+                    var jwtToken = GetToken(authClaims);
+
+                    return Ok(new
+                    {
+                        token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+                        expiration = jwtToken.ValidTo
+                    });
+                    //returning the token...
+
+                }
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+                new Response { Status = "Success", Message = $"Invalid Code" });
         }
 
         private JwtSecurityToken GetToken(List<Claim> authClaims)
@@ -160,5 +219,60 @@ namespace User.Management.Api.Controllers
             return StatusCode(StatusCodes.Status200OK,
                 new Response { Status = "Success", Message = "Email Send Succcessfull!" });
         }
+
+        //[AllowAnonymous]
+        //[HttpPost]
+        //[Route("login")]
+        //public async Task<IActionResult> Login([FromBody] LoginModel loginModel)
+        //{
+        //    // Clear the existing external cookie to ensure a clean login process
+        //    await _signInManager.SignOutAsync();
+
+        //    //checking the user...
+        //    var user = await _userManager.FindByNameAsync(loginModel.Username);
+
+        //    // // two-factor authentication
+        //    //if (user.TwoFactorEnabled)
+        //    //{
+        //    //    await _signInManager.SignOutAsync();
+        //    //    await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
+        //    //    var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
+
+        //    //    var message = new Message(new string[] { user.Email! }, "OTP Confrimation", token);
+        //    //    _emailService.SendEmail(message);
+
+        //    //    return StatusCode(StatusCodes.Status200OK,
+        //    //     new Response { Status = "Success", Message = $"We have sent an OTP to your Email {user.Email}" });
+        //    //}
+
+        //    if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
+        //    {
+        //        var authClaims = new List<Claim>
+        //        {
+        //            new Claim(ClaimTypes.Name, user.UserName),
+        //            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+        //        };
+
+        //        // we add roles to the list
+        //        var userRoles = await _userManager.GetRolesAsync(user);
+        //        foreach (var role in userRoles)
+        //        {
+        //            authClaims.Add(new Claim(ClaimTypes.Role, role));
+        //        }
+
+        //        // generate the token with the climes...
+        //        var jwtToken = GetToken(authClaims);
+
+        //        await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
+
+        //        // returning the token...
+        //        return Ok(new
+        //        {
+        //            token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+        //            expiration = jwtToken.ValidTo,
+        //        });
+        //    }
+        //    return Unauthorized();
+        //}
     }
 }
