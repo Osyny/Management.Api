@@ -8,6 +8,7 @@ using System.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
+using System.Threading.Tasks;
 using User.Management.Api.Models;
 using User.Management.Api.Models.Authentification.Login;
 using User.Management.Api.Models.Authentification.SignUp;
@@ -94,7 +95,7 @@ namespace User.Management.Api.Controllers
         }
 
         [AllowAnonymous]
-        [HttpGet("ConfirmEmail")]
+        [HttpGet("confirm-email")]
         public async Task<IActionResult> ConfirmEmail(string token, string email)
         {
             var userExist = await _userManager.FindByEmailAsync(email);
@@ -158,6 +159,61 @@ namespace User.Management.Api.Controllers
             await _signInManager.SignOutAsync();
 
             return NoContent();
+        }
+
+        [AllowAnonymous]
+        [HttpPost("forgot-password")]
+        public async Task<IActionResult> ForgotPassword(string email)
+        {
+            var user = await _userManager.FindByEmailAsync(email);
+
+            if (user != null)
+            {
+                var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+                var forgotPasswordLink = Url.Action(nameof(ResetPassword), "Authentication", new { token, email = user.Email }, Request.Scheme);
+                var message = new Message(new string[] { user.Email! }, "Forgot Password Link", forgotPasswordLink!);
+                _emailService.SendEmail(message);
+
+                return StatusCode(StatusCodes.Status200OK,
+                 new Response { Status = "Success", Message = $"Password changed request is send to {user.Email}. Please open your email and clik the link!" });
+            }
+            return StatusCode(StatusCodes.Status400BadRequest,
+                             new Response { Status = "Error", Message = $"Couldnot send link to email, please try again!" });
+        }
+
+        [AllowAnonymous]
+        [HttpGet("reset-password")]
+        public IActionResult ResetPassword(string token, string email)
+        {
+            var model = new ResetPassword { Token = token, Email = email };
+            return Ok(new
+            {
+                model
+            });
+        }
+
+        [AllowAnonymous]
+        [HttpPost("reset-password")]
+        public async Task<IActionResult> ResetPassword(ResetPassword resetPassword)
+        {
+            var user = await _userManager.FindByEmailAsync(resetPassword.Email);
+            if (user != null)
+            {
+                var resetPassResult = await _userManager.ResetPasswordAsync(user, resetPassword.Token, resetPassword.Password);
+
+                if (!resetPassResult.Succeeded)
+                {
+                    foreach (var error in resetPassResult.Errors)
+                    {
+                        ModelState.AddModelError(error.Code, error.Description);
+                    }
+                    return Ok(ModelState);
+                }
+                return StatusCode(StatusCodes.Status200OK,
+                    new Response { Status = "Success", Message = $"Password has been changed!" });
+            }
+            return StatusCode(StatusCodes.Status400BadRequest,
+                    new Response { Status = "Success", Message = $"Couldnot send link to email, please try again!" });
         }
 
         [AllowAnonymous]
