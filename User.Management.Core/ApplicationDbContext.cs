@@ -10,7 +10,7 @@ using User.Management.Core.Entities;
 
 namespace User.Management.Core
 {
-    public class ApplicationDbContext : IdentityDbContext<IdentityUser>
+    public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     {
         public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
     : base(options)
@@ -18,7 +18,7 @@ namespace User.Management.Core
 
         }
 
-        public DbSet<ApplicationUser> Users { get; set; }
+       // public DbSet<ApplicationUser> Users { get; set; }
 
         protected override void OnModelCreating(ModelBuilder builder)
         {

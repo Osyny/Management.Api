@@ -1,6 +1,6 @@
 ﻿using System.ComponentModel.DataAnnotations;
 
-namespace User.Management.Api.Models.Authentification.SignUp
+namespace User.Management.Service.Models.Authentification.SignUp
 {
     public class RegisterUser
     {
@@ -16,6 +16,7 @@ namespace User.Management.Api.Models.Authentification.SignUp
         public required string Email { get; set; }
         [Required(ErrorMessage = "Password is Required")]
         public required string Password { get; set; }
+        public List<string> Roles { get; set; }
 
 
     }
