@@ -8,12 +8,11 @@ using System.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
-using System.Threading.Tasks;
 using User.Management.Api.Models;
-using User.Management.Api.Models.Authentification.Login;
-using User.Management.Api.Models.Authentification.SignUp;
 using User.Management.Core.Entities;
 using User.Management.Service.Models;
+using User.Management.Service.Models.Authentification.Login;
+using User.Management.Service.Models.Authentification.SignUp;
 using User.Management.Service.Services;
 
 namespace User.Management.Api.Controllers
@@ -29,12 +28,14 @@ namespace User.Management.Api.Controllers
 
         private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IEmailService _emailService;
+        private readonly IUserManagement _userManagement;
         public AuthenticationController(
             UserManager<ApplicationUser> userManager,
             IConfiguration configuration,
             RoleManager<IdentityRole> roleManager,
             IEmailService emailService,
-            SignInManager<ApplicationUser> signInManager
+            SignInManager<ApplicationUser> signInManager,
+            IUserManagement userManagement
             ) 
         {
             _userManager = userManager;
@@ -42,115 +43,60 @@ namespace User.Management.Api.Controllers
             _roleManager = roleManager;
             _emailService = emailService;
             _signInManager = signInManager;
+            _userManagement = userManagement;
         }
 
         [AllowAnonymous]
-        [HttpPost]
-        public async Task<IActionResult> Register([FromBody]RegisterUser registerUser, string role)
+        [HttpPost("register")]
+        public async Task<IActionResult> Register([FromBody]RegisterUser registerUser)
         {
-            var userExist = await _userManager.FindByEmailAsync(registerUser.Email);
-            if (userExist != null)
+            var tokenResponse = await _userManagement.CreateUserWithTokenAsync(registerUser);
+            if (tokenResponse.IsSuccess && tokenResponse.Response != null)
             {
-                return StatusCode(StatusCodes.Status403Forbidden,
-                    new Response { Status = "Error", Message = "User alredy exist!"});
+                await _userManagement.AssignRoleToUserAsync(registerUser.Roles, tokenResponse.Response.User);
+
+                var confirmationLink = Url.Action(nameof(ConfirmEmail), "Authentication",
+                    new { tokenResponse.Response.Token, email = registerUser.Email }, Request.Scheme);
+
+                //var confirmationLink = $"http://localhost:4200/confirm-account?Token={HttpUtility.UrlEncode(tokenResponse.Response.Token)}&email={HttpUtility.UrlEncode(registerUser.Email)}";
+
+                var message = new Message(new string[] { registerUser.Email! }, "Confirmation email link", confirmationLink!);
+                var responseMsg = _emailService.SendEmail(message);
+                return StatusCode(StatusCodes.Status200OK,
+                        new Response { IsSuccess = true, Message = $"{tokenResponse.Message} {responseMsg}" });
             }
-
-            ApplicationUser user = new ()
-            {
-                Email = registerUser.Email,
-                FirstName = registerUser.FirstName,
-                LastName = registerUser.LastName,
-                UserName = registerUser.UserName,
-                SecurityStamp = Guid.NewGuid().ToString(),
-              //  TwoFactorEnabled = true
-            };
-
-            if(await _roleManager.RoleExistsAsync(role))
-            {
-                var result = await _userManager.CreateAsync(user, registerUser.Password);
-
-                if (!result.Succeeded)
-                {
-                    return StatusCode(StatusCodes.Status500InternalServerError,
-                            new Response { Status = "Error", Message = "User Faild to Create!" });
-                }
-
-                // Add role to the user...
-                await _userManager.AddToRoleAsync(user, role);
-
-                // Add Token to Verify the email
-                var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-                var confirmationLink = Url.Action(nameof(ConfirmEmail), "Authentication", new { token, email = user.Email }, Request.Scheme);
-                var message = new Message(new string[] { user.Email! }, "Confirmation Email Link", confirmationLink!);
-                _emailService.SendEmail(message);
-
-                return StatusCode(StatusCodes.Status201Created,
-                 new Response { Status = "Success", Message = $"User create & Email send to {user.Email} Succcessfully!" });
-            }
-            else
-            {
-                return StatusCode(StatusCodes.Status500InternalServerError,
-                   new Response { Status = "Error", Message = "Role Doesnot Exist!" });
-            }
-        }
-
-        [AllowAnonymous]
-        [HttpGet("confirm-email")]
-        public async Task<IActionResult> ConfirmEmail(string token, string email)
-        {
-            var userExist = await _userManager.FindByEmailAsync(email);
-            if (userExist != null)
-            {
-                var result = await _userManager.ConfirmEmailAsync(userExist, token);
-                if(result.Succeeded)
-                {
-                    return StatusCode(StatusCodes.Status200OK,
-                           new Response { Status = "Success", Message = "Email Verified Succcessfully!" });
-                }
-            }
+            
             return StatusCode(StatusCodes.Status500InternalServerError,
-            new Response { Status = "Error", Message = "This User Doesnot exist!" });
+                  new Response { Message = tokenResponse.Message, IsSuccess = false });
         }
 
         [AllowAnonymous]
-        [HttpPost]
-        [Route("login")]
+        [HttpPost("login")]
         public async Task<IActionResult> Login([FromBody] LoginModel loginModel)
         {
-            // Clear the existing external cookie to ensure a clean login process
-            await _signInManager.SignOutAsync();
-
-            //checking the user...
-            var user = await _userManager.FindByNameAsync(loginModel.Username);
-
-            if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
-            {             
-                var authClaims = new List<Claim>
+            var loginOtpResponse = await _userManagement.GetOtpByLoginAsync(loginModel);
+            if (loginOtpResponse.Response != null)
+            {
+                var user = loginOtpResponse.Response.User;
+                if (user.TwoFactorEnabled)
                 {
-                    new Claim(ClaimTypes.Name, user.UserName),
-                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                };
+                    var token = loginOtpResponse.Response.Token;
+                    var message = new Message(new string[] { user.Email! }, "OTP Confrimation", token);
+                    _emailService.SendEmail(message);
 
-                // we add roles to the list
-                var userRoles = await _userManager.GetRolesAsync(user);
-                foreach (var role in userRoles)
-                {
-                    authClaims.Add(new Claim(ClaimTypes.Role, role));
+                    return StatusCode(StatusCodes.Status200OK,
+                     new Response { IsSuccess = loginOtpResponse.IsSuccess, Status = "Success", Message = $"We have sent an OTP to your Email {user.Email}" });
                 }
 
-                // generate the token with the climes...
-                var jwtToken = GetToken(authClaims);
-
-                await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
-
-                // returning the token...
-                return Ok(new
+                var isValidPass = await _userManager.CheckPasswordAsync(user, loginModel.Password);
+                if(user != null && isValidPass)
                 {
-                    token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                    expiration = jwtToken.ValidTo,
-                });
+                    var serviceResponse = await _userManagement.GetJwtTokenAsync(user);
+                    return Ok(serviceResponse);
+                }
             }
-            return Unauthorized();  
+            return Unauthorized();
+
         }
 
         [HttpPost("logout")]
@@ -253,6 +199,24 @@ namespace User.Management.Api.Controllers
                 new Response { Status = "Success", Message = $"Invalid Code" });
         }
 
+        [AllowAnonymous]
+        [HttpGet("ConfirmEmail")]
+        public async Task<IActionResult> ConfirmEmail(string token, string email)
+        {
+            var userExist = await _userManager.FindByEmailAsync(email);
+            if (userExist != null)
+            {
+                var result = await _userManager.ConfirmEmailAsync(userExist, token);
+                if (result.Succeeded)
+                {
+                    return StatusCode(StatusCodes.Status200OK,
+                           new Response { Status = "Success", Message = "Email Verified Succcessfully!" });
+                }
+            }
+            return StatusCode(StatusCodes.Status500InternalServerError,
+            new Response { Status = "Error", Message = "This User Doesnot exist!" });
+        }
+
         private JwtSecurityToken GetToken(List<Claim> authClaims)
         {
             var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
@@ -275,60 +239,5 @@ namespace User.Management.Api.Controllers
             return StatusCode(StatusCodes.Status200OK,
                 new Response { Status = "Success", Message = "Email Send Succcessfull!" });
         }
-
-        //[AllowAnonymous]
-        //[HttpPost]
-        //[Route("login")]
-        //public async Task<IActionResult> Login([FromBody] LoginModel loginModel)
-        //{
-        //    // Clear the existing external cookie to ensure a clean login process
-        //    await _signInManager.SignOutAsync();
-
-        //    //checking the user...
-        //    var user = await _userManager.FindByNameAsync(loginModel.Username);
-
-        //    // // two-factor authentication
-        //    //if (user.TwoFactorEnabled)
-        //    //{
-        //    //    await _signInManager.SignOutAsync();
-        //    //    await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
-        //    //    var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
-
-        //    //    var message = new Message(new string[] { user.Email! }, "OTP Confrimation", token);
-        //    //    _emailService.SendEmail(message);
-
-        //    //    return StatusCode(StatusCodes.Status200OK,
-        //    //     new Response { Status = "Success", Message = $"We have sent an OTP to your Email {user.Email}" });
-        //    //}
-
-        //    if (user != null && await _userManager.CheckPasswordAsync(user, loginModel.Password))
-        //    {
-        //        var authClaims = new List<Claim>
-        //        {
-        //            new Claim(ClaimTypes.Name, user.UserName),
-        //            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-        //        };
-
-        //        // we add roles to the list
-        //        var userRoles = await _userManager.GetRolesAsync(user);
-        //        foreach (var role in userRoles)
-        //        {
-        //            authClaims.Add(new Claim(ClaimTypes.Role, role));
-        //        }
-
-        //        // generate the token with the climes...
-        //        var jwtToken = GetToken(authClaims);
-
-        //        await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
-
-        //        // returning the token...
-        //        return Ok(new
-        //        {
-        //            token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-        //            expiration = jwtToken.ValidTo,
-        //        });
-        //    }
-        //    return Unauthorized();
-        //}
     }
 }
