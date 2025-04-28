@@ -11,10 +11,12 @@ using Microsoft.OpenApi.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var configuration = (IConfiguration)builder.Configuration;
+
 // Add services to the container.
 builder.Services.AddDbContext<ApplicationDbContext>(options =>
 {
-    var connetionString = builder.Configuration.GetConnectionString("Default");
+    var connetionString = configuration.GetConnectionString("Default");
     options.UseMySql(connetionString, ServerVersion.AutoDetect(connetionString));
 });
 
@@ -41,19 +43,20 @@ builder.Services.AddAuthentication(options =>
     {
         ValidateIssuer = true,
         ValidateAudience = true,
-        ValidAudience = builder.Configuration["JWT:ValidAudience"],
-        ValidIssuer = builder.Configuration["JWT:ValidIssuer"],
-        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(builder.Configuration["JWT:Secret"]))
+        ValidAudience = configuration["JWT:ValidAudience"],
+        ValidIssuer = configuration["JWT:ValidIssuer"],
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(configuration["JWT:Secret"]))
     };
 });
 
 //Add Email Configs
-var emailConfig = builder.Configuration.GetSection("EmailConfiguration").Get<EmailConfiguration>();
+var emailConfig = configuration.GetSection("EmailConfiguration").Get<EmailConfiguration>();
 if(emailConfig != null)
 {
     builder.Services.AddSingleton(emailConfig);
 }
 builder.Services.AddScoped<IEmailService, EmailService>();
+builder.Services.AddScoped<IUserManagement, UserManagement>();
 
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
