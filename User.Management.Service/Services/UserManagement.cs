@@ -4,12 +4,17 @@ using NETCore.MailKit.Core;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Claims;
 using System.Text;
 using System.Threading.Tasks;
 using User.Management.Core.Entities;
 using User.Management.Service.Models;
+using User.Management.Service.Models.Authentification.Login;
 using User.Management.Service.Models.Authentification.SignUp;
 using User.Management.Service.Models.Authentification.User;
+using System.IdentityModel.Tokens.Jwt;
+using Microsoft.IdentityModel.Tokens;
+using System.Security.Cryptography;
 
 namespace User.Management.Service.Services
 {
@@ -19,14 +24,17 @@ namespace User.Management.Service.Services
         private readonly SignInManager<ApplicationUser> _signInManager;
 
         private readonly RoleManager<IdentityRole> _roleManager;
+        private readonly IConfiguration _configuration;
         public UserManagement(
             UserManager<ApplicationUser> userManager,
             RoleManager<IdentityRole> roleManager,
-            SignInManager<ApplicationUser> signInManager) 
+            SignInManager<ApplicationUser> signInManager,
+            IConfiguration configuration) 
         {
             _userManager = userManager;
             _roleManager = roleManager;
             _signInManager = signInManager;
+            _configuration = configuration; 
         }
 
         public async Task<ApiResponse<CreateUserResponse>> CreateUserWithTokenAsync(RegisterUser registerUser)
@@ -84,5 +92,129 @@ namespace User.Management.Service.Services
                 Response = assignedRole
             };
         }
+
+        public async Task<ApiResponse<LoginOtpResponse>> GetOtpByLoginAsync(LoginModel loginModel)
+        {
+            var user = await _userManager.FindByNameAsync(loginModel.Username);
+            if (user != null)
+            {
+                await _signInManager.SignOutAsync();
+                await _signInManager.PasswordSignInAsync(user, loginModel.Password, false, true);
+                if (user.TwoFactorEnabled)
+                {
+                    var token = await _userManager.GenerateTwoFactorTokenAsync(user, "Email");
+                    return new ApiResponse<LoginOtpResponse>
+                    {
+                        Response = new LoginOtpResponse()
+                        {
+                            User = user,
+                            Token = token,
+                            IsTwoFactorEnable = user.TwoFactorEnabled
+                        },
+                        IsSuccess = true,
+                        StatusCode = 200,
+                        Message = $"OTP send to the email {user.Email}"
+                    };
+
+                }
+                else
+                {
+                    return new ApiResponse<LoginOtpResponse>
+                    {
+                        Response = new LoginOtpResponse()
+                        {
+                            User = user,
+                            Token = string.Empty,
+                            IsTwoFactorEnable = user.TwoFactorEnabled
+                        },
+                        IsSuccess = true,
+                        StatusCode = 200,
+                        Message = $"2FA is not enabled"
+                    };
+                }
+            }
+            else
+            {
+                return new ApiResponse<LoginOtpResponse>
+                {
+                    IsSuccess = false,
+                    StatusCode = 404,
+                    Message = $"User doesnot exist."
+                };
+            }
+        }
+
+        public async Task<ApiResponse<LoginResponse>> GetJwtTokenAsync(ApplicationUser user)
+        {
+            var authClaims = new List<Claim>
+                {
+                    new Claim(ClaimTypes.Name, user.UserName),
+                    new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+                };
+
+            var userRoles = await _userManager.GetRolesAsync(user);
+            foreach (var role in userRoles)
+            {
+                authClaims.Add(new Claim(ClaimTypes.Role, role));
+            }
+
+            var jwtToken = GetToken(authClaims); //access token
+            var refreshToken = GenerateRefreshToken();
+            _ = int.TryParse(_configuration["JWT:RefreshTokenValidity"], out int refreshTokenValidity);
+
+            user.RefreshToken = refreshToken;
+            user.RefreshTokenExpiry = DateTime.UtcNow.AddDays(refreshTokenValidity);
+
+            await _userManager.UpdateAsync(user);
+
+            return new ApiResponse<LoginResponse>
+            {
+                Response = new LoginResponse()
+                {
+                    AccessToken = new TokenType()
+                    {
+                        Token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
+                        ExpiryTokenDate = jwtToken.ValidTo
+                    },
+                    RefreshToken = new TokenType()
+                    {
+                        Token = user.RefreshToken,
+                        ExpiryTokenDate = (DateTime)user.RefreshTokenExpiry
+                    }
+                },
+
+                IsSuccess = true,
+                StatusCode = 200,
+                Message = $"Token created"
+            };
+        }
+
+        #region PrivateMethods
+        private JwtSecurityToken GetToken(List<Claim> authClaims)
+        {
+            var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
+            _ = int.TryParse(_configuration["JWT:TokenValidityInMinutes"], out int tokenValidityInMinutes);
+            var expirationTimeUtc = DateTime.UtcNow.AddMinutes(tokenValidityInMinutes);
+            var localTimeZone = TimeZoneInfo.Local;
+            var expirationTimeInLocalTimeZone = TimeZoneInfo.ConvertTimeFromUtc(expirationTimeUtc, localTimeZone);
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["JWT:ValidIssuer"],
+                audience: _configuration["JWT:ValidAudience"],
+                expires: expirationTimeInLocalTimeZone,
+                claims: authClaims,
+                signingCredentials: new SigningCredentials(authSigningKey, SecurityAlgorithms.HmacSha256)
+                );
+
+            return token;
+        }
+        private string GenerateRefreshToken()
+        {
+            var randomNumber = new Byte[64];
+            var range = RandomNumberGenerator.Create();
+            range.GetBytes(randomNumber);
+            return Convert.ToBase64String(randomNumber);
+        }
+        #endregion
     }
 }
