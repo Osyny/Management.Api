@@ -9,10 +9,12 @@ using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
 using User.Management.Api.Models;
+using User.Management.Api.Models.Authentification.SignUp;
 using User.Management.Core.Entities;
 using User.Management.Service.Models;
 using User.Management.Service.Models.Authentification.Login;
 using User.Management.Service.Models.Authentification.SignUp;
+using User.Management.Service.Models.Authentification.User;
 using User.Management.Service.Services;
 
 namespace User.Management.Api.Controllers
@@ -26,13 +28,11 @@ namespace User.Management.Api.Controllers
         private readonly UserManager<ApplicationUser> _userManager;
         private readonly SignInManager<ApplicationUser> _signInManager;
 
-        private readonly RoleManager<IdentityRole> _roleManager;
         private readonly IEmailService _emailService;
         private readonly IUserManagement _userManagement;
         public AuthenticationController(
             UserManager<ApplicationUser> userManager,
             IConfiguration configuration,
-            RoleManager<IdentityRole> roleManager,
             IEmailService emailService,
             SignInManager<ApplicationUser> signInManager,
             IUserManagement userManagement
@@ -40,7 +40,6 @@ namespace User.Management.Api.Controllers
         {
             _userManager = userManager;
             _configuration = configuration;
-            _roleManager = roleManager;
             _emailService = emailService;
             _signInManager = signInManager;
             _userManagement = userManagement;
@@ -163,44 +162,7 @@ namespace User.Management.Api.Controllers
         }
 
         [AllowAnonymous]
-        [HttpPost]
-        [Route("login-2FA")]
-        public async Task<IActionResult> LoginWithOTP(string code, string username)
-        {
-            var user = await _userManager.FindByNameAsync(username);
-            var signIn = await _signInManager.TwoFactorSignInAsync("Email", code, false, false);
-            if (signIn.Succeeded)
-            {
-                if (user != null)
-                {
-                    var authClaims = new List<Claim>
-                    {
-                        new Claim(ClaimTypes.Name, user.UserName),
-                        new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-                    };
-                    var userRoles = await _userManager.GetRolesAsync(user);
-                    foreach (var role in userRoles)
-                    {
-                        authClaims.Add(new Claim(ClaimTypes.Role, role));
-                    }
-
-                    var jwtToken = GetToken(authClaims);
-
-                    return Ok(new
-                    {
-                        token = new JwtSecurityTokenHandler().WriteToken(jwtToken),
-                        expiration = jwtToken.ValidTo
-                    });
-                    //returning the token...
-
-                }
-            }
-            return StatusCode(StatusCodes.Status404NotFound,
-                new Response { Status = "Success", Message = $"Invalid Code" });
-        }
-
-        [AllowAnonymous]
-        [HttpGet("ConfirmEmail")]
+        [HttpGet("confirmEmail")]
         public async Task<IActionResult> ConfirmEmail(string token, string email)
         {
             var userExist = await _userManager.FindByEmailAsync(email);
@@ -217,6 +179,37 @@ namespace User.Management.Api.Controllers
             new Response { Status = "Error", Message = "This User Doesnot exist!" });
         }
 
+
+        [AllowAnonymous]
+        [HttpPost]
+        [Route("login-2FA")]
+        public async Task<IActionResult> LoginWithOTP(LoginWithOTP loginWithOTP)
+        {
+            var jwt = await _userManagement.LoginUser2FactorSignInWithJWTokenAsync(loginWithOTP.Code, loginWithOTP.Username);
+            if (jwt.IsSuccess)
+            {
+                return Ok(jwt);
+
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+                new Response { Status = "Success", Message = $"Invalid Code" });
+        }
+
+        [HttpPost]
+        [Route("refresh-roken")]
+        public async Task<IActionResult> RefreshToken(LoginResponse tokens)
+        {
+            var jwt = await _userManagement.RenewAccessTokenAsync(tokens);
+            if (jwt.IsSuccess)
+            {
+                return Ok(jwt);
+            }
+            return StatusCode(StatusCodes.Status404NotFound,
+                new Response { Status = "Success", Message = $"Invalid Code" });
+        }
+
+        #region PrivateMethods 
+
         private JwtSecurityToken GetToken(List<Claim> authClaims)
         {
             var authSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
@@ -230,7 +223,6 @@ namespace User.Management.Api.Controllers
             return token;
         }
 
-        // [HttpGet]
         private IActionResult TestEmail()
         {
 
@@ -239,5 +231,7 @@ namespace User.Management.Api.Controllers
             return StatusCode(StatusCodes.Status200OK,
                 new Response { Status = "Success", Message = "Email Send Succcessfull!" });
         }
+
+        #endregion
     }
 }
